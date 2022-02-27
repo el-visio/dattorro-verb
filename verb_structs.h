@@ -1,5 +1,13 @@
 #include <stdint.h>
 
+enum {
+  TAP_MAIN = 0,
+  TAP_OUT1,
+  TAP_OUT2,
+  TAP_OUT3,
+  MAX_TAPS
+};
+
 /* DelayBuffer context, also used in AllPassFilter */
 typedef struct sDelayBuffer {
   // Sample buffer
@@ -8,8 +16,8 @@ typedef struct sDelayBuffer {
   // Mask for fast array index wrapping in read / write 
   uint16_t mask;
 
-  // Read offset 
-  uint16_t readOffset;
+  // Read offsets
+  uint16_t readOffset[MAX_TAPS];
 } DelayBuffer;
 
 /* DattorroVerb context */
@@ -41,7 +49,7 @@ typedef struct sDattorroVerb {
   double   decayDiffusion1Amount;
   double   dampingAmount;
   double   decayAmount;
-  double   decayDiffusion2Amount;  // Automatically set in setDecay
+  double   decayDiffusion2Amount;  // Automatically set in DattorroVerb_setDecay
 
   // Cycle count for syncing delay lines
   uint16_t t;

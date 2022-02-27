@@ -4,7 +4,7 @@ by el-visio 2022
 
 The algorithm: https://ccrma.stanford.edu/~dattorro/EffectDesignPart1.pdf
 
-This reverb is an fine-tuned IIR feedback delay network architecture
+This reverb is a fine-tuned IIR feedback delay network architecture
 with lots of magic numbers involved (faithful to the original paper).
 
 There are three basic components in the signal flow:
@@ -36,6 +36,7 @@ My github:     https://github.com/el-visio
 #include <string.h>
 #include <stdbool.h>
 #include <stdlib.h>
+#include <stdio.h>
 
 #include "verb.h"
 #include "verb_structs.h"
@@ -55,9 +56,9 @@ double clamp(double x, double min, double max)
 }
 
 /* Set delay amount */
-void DelayBuffer_setDelay(DelayBuffer* db, uint16_t delay)
+void DelayBuffer_setDelay(DelayBuffer* db, uint16_t tap, uint16_t delay)
 {
-  db->readOffset = db->mask + 1 - delay;
+  db->readOffset[tap] = db->mask + 1 - delay;
 }
 
 /* Initialize DelayBuffer instance */
@@ -90,7 +91,7 @@ void DelayBuffer_init(DelayBuffer* db, uint16_t delay)
 
   // Create bitmask for fast wrapping of the circular buffer
   db->mask = bufferSize - 1;
-  DelayBuffer_setDelay(db, delay);
+  DelayBuffer_setDelay(db, TAP_MAIN, delay);
 }
 
 /* Free resources for DelayBuffer instance */
@@ -104,7 +105,7 @@ void DelayBuffer_delete(DelayBuffer* db)
 double DelayBuffer_process(DelayBuffer* db, uint16_t t, double in)
 {
   db->buffer[t & db->mask] = in;
-  return db->buffer[(t + db->readOffset) & db->mask];
+  return db->buffer[(t + db->readOffset[TAP_MAIN]) & db->mask];
 }
 
 /* Write value into delay buffer */
@@ -114,21 +115,15 @@ void DelayBuffer_write(DelayBuffer* db, uint16_t t, double in)
 }
 
 /* Read delayed output value */
-double DelayBuffer_read(DelayBuffer* db, uint16_t t) 
+double DelayBuffer_read(DelayBuffer* db, uint16_t tapId, uint16_t t) 
 {
-  return db->buffer[(t + db->readOffset) & db->mask];
-}
-
-/* Read delay from offset */
-double DelayBuffer_readOffset(DelayBuffer* db, uint16_t t, uint16_t delay) 
-{
-  return db->buffer[(t + db->mask - delay + 1) & db->mask];
+  return db->buffer[(t + db->readOffset[tapId]) & db->mask];
 }
 
 /* Apply all-pass filter */
 double AllPassFilter_process(DelayBuffer* db, uint16_t t, double gain, double in)
 {
-  double delayed = DelayBuffer_read(db, t);
+  double delayed = DelayBuffer_read(db, TAP_MAIN, t);
   in += delayed * -gain;
   DelayBuffer_write(db, t, in);
   return delayed + in * gain;
@@ -144,7 +139,7 @@ double LowPassFilter_process(double* out, double freq, double in)
 /* Set pre-delay length (relative to MAX_PREDELAY) */
 void DattorroVerb_setPreDelay(DattorroVerb* v, double value)
 {
-  DelayBuffer_setDelay(&v->preDelay, value * MAX_PREDELAY);
+  DelayBuffer_setDelay(&v->preDelay, TAP_MAIN, value * MAX_PREDELAY);
 }
 
 /* Set pre-filter amount */
@@ -198,14 +193,34 @@ void initialize(DattorroVerb* v)
   DelayBuffer_init(&v->inDiffusion[3], 277);
 
   DelayBuffer_init(&v->decayDiffusion1[0], 672);    // + EXCURSION
+
   DelayBuffer_init(&v->preDampingDelay[0], 4453);
+  DelayBuffer_setDelay(&v->preDampingDelay[0], TAP_OUT1, 353);
+  DelayBuffer_setDelay(&v->preDampingDelay[0], TAP_OUT2, 3627);
+  DelayBuffer_setDelay(&v->preDampingDelay[0], TAP_OUT3, 1990);
+
   DelayBuffer_init(&v->decayDiffusion2[0], 1800);
+  DelayBuffer_setDelay(&v->decayDiffusion2[0], TAP_OUT1, 187);
+  DelayBuffer_setDelay(&v->decayDiffusion2[0], TAP_OUT2, 1228);
+
   DelayBuffer_init(&v->postDampingDelay[0], 3720);
+  DelayBuffer_setDelay(&v->postDampingDelay[0], TAP_OUT1, 1066);
+  DelayBuffer_setDelay(&v->postDampingDelay[0], TAP_OUT2, 2673);
 
   DelayBuffer_init(&v->decayDiffusion1[1], 908);    // + EXCURSION
+
   DelayBuffer_init(&v->preDampingDelay[1], 4217);
+  DelayBuffer_setDelay(&v->preDampingDelay[1], TAP_OUT1, 266);
+  DelayBuffer_setDelay(&v->preDampingDelay[1], TAP_OUT2, 2974);
+  DelayBuffer_setDelay(&v->preDampingDelay[1], TAP_OUT3, 2111);
+
   DelayBuffer_init(&v->decayDiffusion2[1], 2656);
+  DelayBuffer_setDelay(&v->decayDiffusion2[1], TAP_OUT1, 335);
+  DelayBuffer_setDelay(&v->decayDiffusion2[1], TAP_OUT2, 1913);
+
   DelayBuffer_init(&v->postDampingDelay[1], 3163);
+  DelayBuffer_setDelay(&v->postDampingDelay[1], TAP_OUT1, 121);
+  DelayBuffer_setDelay(&v->postDampingDelay[1], TAP_OUT2, 1996);
 
   // Default settings
   DattorroVerb_setPreDelay(v, 0.1);
@@ -260,11 +275,11 @@ void DattorroVerb_process(DattorroVerb* v, double in)
   // Modulate decayDiffusion1A & decayDiffusion1B
   if ((v->t & 0x07ff) == 0) {
     if (v->t < (1<<15)) {
-      v->decayDiffusion1[0].readOffset--;
-      v->decayDiffusion1[1].readOffset--;
+      v->decayDiffusion1[0].readOffset[TAP_MAIN]--;
+      v->decayDiffusion1[1].readOffset[TAP_MAIN]--;
     } else {
-      v->decayDiffusion1[0].readOffset++;
-      v->decayDiffusion1[1].readOffset++;
+      v->decayDiffusion1[0].readOffset[TAP_MAIN]++;
+      v->decayDiffusion1[1].readOffset[TAP_MAIN]++;
     }
   }
 
@@ -275,16 +290,14 @@ void DattorroVerb_process(DattorroVerb* v, double in)
   x = LowPassFilter_process(&v->preFilter, v->preFilterAmount, x);
 
   // Input diffusion
-  for (int i = 0; i < 4; i++) {
-    x = AllPassFilter_process(&v->inDiffusion[i], 
-                              v->t, 
-                              (i < 2) ? v->inputDiffusion1Amount : v->inputDiffusion2Amount, 
-                              x);
-  }
+  x = AllPassFilter_process(&v->inDiffusion[0], v->t, v->inputDiffusion1Amount, x);
+  x = AllPassFilter_process(&v->inDiffusion[1], v->t, v->inputDiffusion1Amount, x);
+  x = AllPassFilter_process(&v->inDiffusion[2], v->t, v->inputDiffusion2Amount, x);
+  x = AllPassFilter_process(&v->inDiffusion[3], v->t, v->inputDiffusion2Amount, x);
 
   for (int i = 0; i < 2; i++) {
     // Add cross feedback
-    x1 = x + DelayBuffer_read(&v->postDampingDelay[1 - i], v->t) * v->decayAmount;
+    x1 = x + DelayBuffer_read(&v->postDampingDelay[1 - i], TAP_MAIN, v->t) * v->decayAmount;
 
     // Process single half of the tank
     x1 = AllPassFilter_process(&v->decayDiffusion1[i], v->t, -v->decayDiffusion1Amount, x1);
@@ -303,13 +316,13 @@ void DattorroVerb_process(DattorroVerb* v, double in)
 double DattorroVerb_getLeft(DattorroVerb* v)
 {
   double a;
-  a  = DelayBuffer_readOffset(&v->preDampingDelay[1],  v->t, 266);
-  a += DelayBuffer_readOffset(&v->preDampingDelay[1],  v->t, 2974);
-  a -= DelayBuffer_readOffset(&v->decayDiffusion2[1],  v->t, 1913);
-  a += DelayBuffer_readOffset(&v->postDampingDelay[1], v->t, 1996);
-  a -= DelayBuffer_readOffset(&v->preDampingDelay[0],  v->t, 1990);
-  a -= DelayBuffer_readOffset(&v->decayDiffusion2[0],  v->t, 187);
-  a += DelayBuffer_readOffset(&v->postDampingDelay[0], v->t, 1066);
+  a  = DelayBuffer_read(&v->preDampingDelay[1],  TAP_OUT1, v->t);
+  a += DelayBuffer_read(&v->preDampingDelay[1],  TAP_OUT2, v->t);
+  a -= DelayBuffer_read(&v->decayDiffusion2[1],  TAP_OUT2, v->t);
+  a += DelayBuffer_read(&v->postDampingDelay[1], TAP_OUT2, v->t);
+  a -= DelayBuffer_read(&v->preDampingDelay[0],  TAP_OUT3, v->t);
+  a -= DelayBuffer_read(&v->decayDiffusion2[0],  TAP_OUT1, v->t);
+  a += DelayBuffer_read(&v->postDampingDelay[0], TAP_OUT1, v->t);
   return a;
 }
 
@@ -317,12 +330,12 @@ double DattorroVerb_getLeft(DattorroVerb* v)
 double DattorroVerb_getRight(DattorroVerb* v)
 {
   double a;
-  a  = DelayBuffer_readOffset(&v->preDampingDelay[0],  v->t, 353);
-  a += DelayBuffer_readOffset(&v->preDampingDelay[0],  v->t, 3627);
-  a -= DelayBuffer_readOffset(&v->decayDiffusion2[0],  v->t, 1228);
-  a += DelayBuffer_readOffset(&v->postDampingDelay[0], v->t, 2673);
-  a -= DelayBuffer_readOffset(&v->preDampingDelay[1],  v->t, 2111);
-  a -= DelayBuffer_readOffset(&v->decayDiffusion2[1],  v->t, 335);
-  a += DelayBuffer_readOffset(&v->postDampingDelay[1], v->t, 121);
+  a  = DelayBuffer_read(&v->preDampingDelay[0],  TAP_OUT1, v->t);
+  a += DelayBuffer_read(&v->preDampingDelay[0],  TAP_OUT2, v->t);
+  a -= DelayBuffer_read(&v->decayDiffusion2[0],  TAP_OUT2, v->t);
+  a += DelayBuffer_read(&v->postDampingDelay[0], TAP_OUT2, v->t);
+  a -= DelayBuffer_read(&v->preDampingDelay[1],  TAP_OUT3, v->t);
+  a -= DelayBuffer_read(&v->decayDiffusion2[1],  TAP_OUT1, v->t);
+  a += DelayBuffer_read(&v->postDampingDelay[1], TAP_OUT1, v->t);
   return a;
 }
